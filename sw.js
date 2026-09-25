@@ -1,7 +1,8 @@
 // Service worker: кэширует файлы приложения, чтобы оно открывалось без интернета.
 // Файлы берутся из сети, а кэш нужен для работы офлайн. VERSION меняй, если переименовал или удалил файлы.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `money-${VERSION}`;
+// Большой модуль чтения PDF (vendor/pdfjs) не кэшируется заранее — он загрузится при первом импорте PDF.
 const FILES = [
   './',
   './index.html',
@@ -13,11 +14,21 @@ const FILES = [
   './js/utils.js',
   './js/ui.js',
   './js/charts.js',
+  './js/qr.js',
+  './js/import.js',
+  './js/lock.js',
   './js/views/home.js',
   './js/views/history.js',
   './js/views/budgets.js',
+  './js/views/plans.js',
+  './js/views/goals.js',
+  './js/views/debts.js',
   './js/views/more.js',
   './js/views/txSheet.js',
+  './js/views/scanner.js',
+  './js/views/importSheet.js',
+  './js/views/onboarding.js',
+  './js/views/photo.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png',

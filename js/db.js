@@ -1,7 +1,7 @@
 // Минимальная обёртка над IndexedDB. Все данные живут только в браузере на устройстве.
 const DB_NAME = 'money-tracker';
-const DB_VERSION = 1;
-export const STORES = ['accounts', 'categories', 'transactions', 'budgets', 'subscriptions', 'meta'];
+const DB_VERSION = 2;
+export const STORES = ['accounts', 'categories', 'transactions', 'budgets', 'subscriptions', 'meta', 'debts', 'photos'];
 
 let dbPromise;
 
@@ -35,6 +35,15 @@ export async function getAll(store) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const req = db.transaction(store).objectStore(store).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function get(store, id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store).objectStore(store).get(id);
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });

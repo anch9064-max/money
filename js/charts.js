@@ -44,6 +44,10 @@ function niceMax(v) {
  * data: [{ key: 'YYYY-MM', income, expense }]
  */
 export function monthlyChart(container, data, { selected } = {}) {
+  if (!data.some((d) => d.income || d.expense)) {
+    container.innerHTML = `<div class="empty">График появится, когда добавишь первые операции</div>`;
+    return;
+  }
   const W = Math.max(280, container.clientWidth || 340);
   const H = 180;
   const pad = { l: 44, r: 4, t: 8, b: 22 };

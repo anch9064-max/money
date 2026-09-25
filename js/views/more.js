@@ -1,18 +1,30 @@
-// Экран «Ещё»: счета, категории, регулярные платежи, резервные копии.
+// Экран «Ещё»: импорт, регулярные платежи, счета, настройки, защита, резервные копии.
 import * as S from '../store.js';
 import { openSheet, confirmSheet, emojiPicker, bindEmojiPicker } from '../ui.js';
-import { esc, money, parseAmount, toast, today, shortDate, fromISO } from '../utils.js';
+import { esc, money, parseAmount, toast, today, shortDate, fromISO, CURRENCIES } from '../utils.js';
+import { pinEnabled, faceIdEnabled, faceIdAvailable, openPinSetup, disablePin, enableFaceId } from '../lock.js';
 
 const PERIODS = { week: 'Каждую неделю', month: 'Каждый месяц', year: 'Каждый год' };
 const PERIODS_SHORT = { week: 'еженедельно', month: 'ежемесячно', year: 'ежегодно' };
 
 export function renderMore(view) {
-  const accounts = S.activeAccounts();
+  const accounts = S.regularAccounts();
   const subs = [...S.state.subscriptions].sort((a, b) => a.nextDate.localeCompare(b.nextDate));
   const monthlySubs = subs.filter((s) => s.active && (s.type || 'expense') === 'expense')
     .reduce((sum, s) => sum + (s.period === 'week' ? s.amount * 52 / 12 : s.period === 'year' ? s.amount / 12 : s.amount), 0);
+  const rates = S.getMeta('rates');
+  const foreign = S.usedCurrencies();
+  const toggle = (on) => `<span class="switch ${on ? 'on' : ''}"><i></i></span>`;
 
   view.innerHTML = `
+    <div class="section-title">Добавить операции</div>
+    <div class="list">
+      <button class="row" data-scan><span class="ico">📷</span><span class="main"><div class="t1">Сканировать чеки</div>
+        <div class="t2">QR-код с кассового чека</div></span><span class="chev">›</span></button>
+      <button class="row" data-import><span class="ico">🏦</span><span class="main"><div class="t1">Импорт выписки банка</div>
+        <div class="t2">Т-Банк (CSV), Сбер (PDF) и другие</div></span><span class="chev">›</span></button>
+    </div>
+
     <div class="section-title">Регулярные платежи</div>
     <div class="list">
       ${subs.map((s) => {
@@ -32,14 +44,27 @@ export function renderMore(view) {
     <div class="section-title">Счета</div>
     <div class="list">
       ${accounts.map((a) => `<button class="row" data-acc="${a.id}"><span class="ico">${a.icon}</span>
-        <span class="main"><div class="t1">${esc(a.name)}</div></span><span class="amt">${money(S.accountBalance(a.id))}</span></button>`).join('')}
-      <button class="row" data-acc-new><span class="ico">＋</span><span class="main"><div class="t1" style="color:var(--accent)">Добавить счёт</div></span></button>
+        <span class="main"><div class="t1">${esc(a.name)}</div></span><span class="amt">${money(S.accountBalance(a.id), { cur: a.currency })}</span></button>`).join('')}
+      <button class="row" data-acc-new><span class="ico">＋</span><span class="main"><div class="t1" style="color:var(--accent)">Добавить счёт</div>
+        <div class="t2">Карта, наличные, вклад, валютный счёт</div></span></button>
+    </div>
+    ${foreign.length ? `<div class="small muted" style="margin:-4px 4px 8px">Курсы ЦБ${rates?.date ? ' на ' + shortDate(rates.date.slice(0, 10)) : ''}: ${foreign.map((c) => S.rateOf(c) ? `${c} = ${S.rateOf(c).toFixed(2)} ₽` : `${c} — нет курса`).join(', ')}
+      · <button class="link-btn small" data-rates>Обновить</button></div>` : ''}
+
+    <div class="section-title">Защита</div>
+    <div class="list">
+      <button class="row" data-pin><span class="ico">🔒</span><span class="main"><div class="t1">ПИН-код при входе</div>
+        <div class="t2">${pinEnabled() ? 'Включён' : 'Выключен'}</div></span>${toggle(pinEnabled())}</button>
+      ${pinEnabled() ? `<button class="row" data-face><span class="ico">🙂</span><span class="main"><div class="t1">Вход по Face ID</div>
+        <div class="t2">В установленном приложении</div></span>${toggle(faceIdEnabled())}</button>` : ''}
     </div>
 
     <div class="section-title">Настройки</div>
     <div class="list">
       <button class="row" data-cats="expense"><span class="ico">🏷</span><span class="main"><div class="t1">Категории расходов</div></span><span class="chev">›</span></button>
       <button class="row" data-cats="income"><span class="ico">💰</span><span class="main"><div class="t1">Категории доходов</div></span><span class="chev">›</span></button>
+      <button class="row" data-big><span class="ico">🔠</span><span class="main"><div class="t1">Крупный текст</div></span>${toggle(S.getMeta('bigText'))}</button>
+      <button class="row" data-tour><span class="ico">💡</span><span class="main"><div class="t1">Как пользоваться</div></span><span class="chev">›</span></button>
     </div>
 
     <div class="section-title">Данные</div>
@@ -56,10 +81,31 @@ export function renderMore(view) {
       Если удалить приложение с экрана «Домой» или очистить данные Safari, они пропадут, поэтому время от времени сохраняй резервную копию (например, в «Файлы» или iCloud Drive).
       <br><br>Операций: ${S.state.transactions.length}</p>`;
 
+  view.querySelector('[data-scan]').onclick = async () => (await import('./scanner.js')).openScanner({ batch: true });
+  view.querySelector('[data-import]').onclick = async () => (await import('./importSheet.js')).openImportSheet();
   view.querySelectorAll('[data-sub]').forEach((b) => b.onclick = () => openSubSheet(S.state.subscriptions.find((s) => s.id === b.dataset.sub)));
   view.querySelector('[data-sub-new]').onclick = () => openSubSheet();
   view.querySelectorAll('[data-acc]').forEach((b) => b.onclick = () => openAccountSheet(S.account(b.dataset.acc)));
   view.querySelector('[data-acc-new]').onclick = () => openAccountSheet();
+  view.querySelector('[data-rates]')?.addEventListener('click', async () => {
+    toast((await S.refreshRates(true)) ? 'Курсы обновлены' : 'Не удалось обновить курсы — нет интернета?');
+  });
+  view.querySelector('[data-pin]').onclick = () => {
+    if (pinEnabled()) confirmSheet('Выключить ПИН-код?', 'Приложение будет открываться без кода.', 'Выключить', async () => { await disablePin(); renderMore(view); });
+    else openPinSetup(() => renderMore(view));
+  };
+  view.querySelector('[data-face]')?.addEventListener('click', async () => {
+    if (faceIdEnabled()) { await S.setMeta('faceId', null); renderMore(view); return; }
+    if (!(await faceIdAvailable())) { toast('Face ID недоступен в этом браузере. Установи приложение на экран «Домой».', 4000); return; }
+    try { await enableFaceId(); toast('Face ID включён'); } catch { toast('Не удалось включить Face ID'); }
+    renderMore(view);
+  });
+  view.querySelector('[data-big]').onclick = async () => {
+    await S.setMeta('bigText', !S.getMeta('bigText'));
+    document.documentElement.classList.toggle('big', !!S.getMeta('bigText'));
+    renderMore(view);
+  };
+  view.querySelector('[data-tour]').onclick = async () => (await import('./onboarding.js')).showOnboarding();
   view.querySelectorAll('[data-cats]').forEach((b) => b.onclick = () => openCategoriesSheet(b.dataset.cats));
   view.querySelector('[data-export-json]').onclick = exportJSON;
   view.querySelector('[data-export-csv]').onclick = exportCSV;
@@ -71,11 +117,16 @@ export function renderMore(view) {
 // ===== Счета =====
 export function openAccountSheet(acc) {
   let icon = acc?.icon || '💳';
+  const locked = acc && S.accountUsed(acc.id);
   openSheet(acc ? 'Счёт' : 'Новый счёт', (body, close) => {
     body.innerHTML = `
       <label class="field"><span>Название</span><input class="input" data-name value="${esc(acc?.name || '')}" placeholder="Например, Т-Банк" maxlength="40"></label>
-      <label class="field"><span>Начальный остаток, ₽</span><input class="input" inputmode="decimal" data-initial value="${acc ? acc.initial / 100 : ''}" placeholder="0"></label>
-      ${acc ? `<div class="small muted" style="margin:-4px 4px 12px">Сейчас на счёте: <b>${money(S.accountBalance(acc.id))}</b></div>` : ''}
+      <div class="meta-row">
+        <label class="field"><span>Начальный остаток</span><input class="input" inputmode="decimal" data-initial value="${acc ? acc.initial / 100 : ''}" placeholder="0"></label>
+        <label class="field"><span>Валюта</span><select class="input" data-cur ${locked ? 'disabled' : ''}>
+          ${Object.entries(CURRENCIES).map(([k, v]) => `<option value="${k}" ${k === (acc?.currency || 'RUB') ? 'selected' : ''}>${v.sym} ${v.name}</option>`).join('')}</select></label>
+      </div>
+      ${acc ? `<div class="small muted" style="margin:-4px 4px 12px">Сейчас на счёте: <b>${money(S.accountBalance(acc.id), { cur: acc.currency })}</b>${locked ? '. Валюту нельзя поменять, пока по счёту есть операции.' : ''}</div>` : ''}
       <div class="field"><span>Иконка</span>${emojiPicker(icon)}</div>
       <button class="btn" data-save>Сохранить</button>
       ${acc ? '<div style="height:6px"></div><button class="btn danger" data-del>Удалить счёт</button>' : ''}`;
@@ -83,7 +134,9 @@ export function openAccountSheet(acc) {
     body.querySelector('[data-save]').onclick = async () => {
       const name = body.querySelector('[data-name]').value.trim();
       if (!name) { toast('Введи название'); return; }
-      await S.saveAccount({ ...(acc || {}), name, icon, initial: parseAmount(body.querySelector('[data-initial]').value || '0') });
+      const currency = body.querySelector('[data-cur]').value;
+      await S.saveAccount({ ...(acc || {}), name, icon, currency, initial: parseAmount(body.querySelector('[data-initial]').value || '0') });
+      if (currency !== 'RUB') S.refreshRates();
       close();
     };
     body.querySelector('[data-del]')?.addEventListener('click', () => {
@@ -134,7 +187,7 @@ function openCategorySheet(type, cat, onDone) {
 
 // ===== Регулярные платежи =====
 function openSubSheet(sub) {
-  const accounts = S.activeAccounts();
+  const accounts = S.regularAccounts();
   const st = {
     type: sub?.type || 'expense',
     categoryId: sub?.categoryId || null,
@@ -219,19 +272,23 @@ async function deliverFile(name, content, mime) {
   return true;
 }
 
-async function exportJSON() {
-  const ok = await deliverFile(`money-backup-${today()}.json`, JSON.stringify(S.exportData()), 'application/json');
-  if (ok) { await S.setMeta('lastBackup', today()); toast('Резервная копия готова'); }
+export async function exportJSON() {
+  toast('Готовлю копию…');
+  const data = await S.exportData();
+  const ok = await deliverFile(`money-backup-${today()}.json`, JSON.stringify(data), 'application/json');
+  if (ok) { await S.setMeta('lastBackup', today()); S.emit(); toast('Резервная копия готова'); }
 }
 
 async function exportCSV() {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const types = { expense: 'Расход', income: 'Доход', transfer: 'Перевод' };
-  const rows = [['Дата', 'Тип', 'Сумма', 'Категория', 'Счёт', 'Счёт получатель', 'Комментарий']];
+  const types = { expense: 'Расход', income: 'Доход', transfer: 'Перевод', debt: 'Долг' };
+  const rows = [['Дата', 'Время', 'Тип', 'Сумма', 'Валюта', 'Категория', 'Счёт', 'Счёт получатель', 'Комментарий']];
   for (const t of S.sortedTransactions()) {
+    const out = t.type === 'expense' || (t.type === 'debt' && t.flow === 'out');
     rows.push([
-      t.date, types[t.type],
-      ((t.type === 'expense' ? -t.amount : t.amount) / 100).toFixed(2).replace('.', ','),
+      t.date, t.time || '', types[t.type],
+      ((out ? -t.amount : t.amount) / 100).toFixed(2).replace('.', ','),
+      S.account(t.accountId)?.currency || 'RUB',
       S.category(t.categoryId)?.name || '', S.account(t.accountId)?.name || '',
       t.type === 'transfer' ? S.account(t.toAccountId)?.name || '' : '', t.note || '',
     ]);

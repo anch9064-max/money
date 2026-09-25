@@ -4,10 +4,19 @@ const rub0 = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
 const rub2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const rub = { format: (v) => (Number.isInteger(Math.round(v * 100) / 100) ? rub0 : rub2).format(v) };
 
+export const CURRENCIES = {
+  RUB: { sym: '₽', name: 'Рубль' }, USD: { sym: '$', name: 'Доллар США' }, EUR: { sym: '€', name: 'Евро' },
+  CNY: { sym: '¥', name: 'Юань' }, KZT: { sym: '₸', name: 'Тенге' }, BYN: { sym: 'Br', name: 'Белорусский рубль' },
+  TRY: { sym: '₺', name: 'Турецкая лира' }, AMD: { sym: '֏', name: 'Драм' }, GEL: { sym: '₾', name: 'Лари' },
+  AED: { sym: 'AED', name: 'Дирхам ОАЭ' }, THB: { sym: '฿', name: 'Бат' }, UZS: { sym: 'сум', name: 'Узбекский сум' },
+  KGS: { sym: 'сом', name: 'Киргизский сом' }, GBP: { sym: '£', name: 'Фунт' }, JPY: { sym: '¥', name: 'Иена' },
+};
+export const curSym = (cur) => CURRENCIES[cur || 'RUB']?.sym || cur;
+
 /** Суммы храним в копейках (целые числа), чтобы не было ошибок округления. */
-export function money(kop, { sign = false } = {}) {
+export function money(kop, { sign = false, cur = 'RUB' } = {}) {
   const v = kop / 100;
-  const s = rub.format(Math.abs(v)) + ' ₽';
+  const s = rub.format(Math.abs(v)) + '\u00a0' + curSym(cur);
   if (v < 0) return '−' + s;
   if (sign && v > 0) return '+' + s;
   return s;
@@ -89,12 +98,40 @@ export function $(sel, root = document) { return root.querySelector(sel); }
 export function $$(sel, root = document) { return [...root.querySelectorAll(sel)]; }
 
 let toastTimer;
-export function toast(text, ms = 2200) {
+/** Всплывающее сообщение. action = { label, onClick } — например, «Отменить». */
+export function toast(text, ms = 2200, action) {
   const el = document.getElementById('toast');
-  el.textContent = text;
+  el.innerHTML = '';
+  el.append(document.createTextNode(text));
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast-action';
+    b.textContent = action.label;
+    b.onclick = () => { el.classList.remove('show'); action.onClick(); };
+    el.append(b);
+    ms = Math.max(ms, 5000);
+  }
+  el.classList.toggle('has-action', !!action);
   el.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), ms);
+}
+
+/** Простой хэш строки (для ключей дублей) */
+export function hash(str) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36);
+}
+
+export function daysInMonth(key) {
+  const [y, m] = key.split('-').map(Number);
+  return new Date(y, m, 0).getDate();
 }
 
 export function vibrate() { try { navigator.vibrate?.(10); } catch { /* iOS не поддерживает */ } }
