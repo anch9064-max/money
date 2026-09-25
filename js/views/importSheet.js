@@ -62,7 +62,9 @@ export function openImportSheet() {
       body.innerHTML = `<div class="empty">⏳ Читаю выписку…</div>`;
       try {
         const importFile = await import('../import.js');
-        const parsed = await importFile.parseFile(file);
+        const parsed = await importFile.parseFile(file, (page, total) => {
+          body.innerHTML = `<div class="empty">⏳ Читаю выписку: страница ${page} из ${total}…</div>`;
+        });
         if (!parsed.rows.length) {
           body.innerHTML = `<div class="empty">Не получилось найти операции в этом файле.<br><br>
             Проверь, что это выписка с операциями (а не справка об остатке).

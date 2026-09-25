@@ -102,12 +102,14 @@ export function parseStatementCSV(text) {
 }
 
 // ===================== PDF: Сбер и похожие =====================
-async function pdfLines(buf) {
+async function pdfLines(buf, onProgress) {
+  await import('../vendor/pdfjs/polyfill.mjs');
   const pdfjs = await import('../vendor/pdfjs/pdf.min.mjs');
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/worker.mjs', import.meta.url).href;
   const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
   const lines = [];
   for (let p = 1; p <= doc.numPages; p++) {
+    onProgress?.(p, doc.numPages);
     const page = await doc.getPage(p);
     const tc = await page.getTextContent();
     const rows = [];
@@ -124,13 +126,14 @@ async function pdfLines(buf) {
   return lines;
 }
 
-const AMT = '[+−-]?\\d{1,3}(?:[ \\u00a0]\\d{3})*,\\d{2}';
+const AMT = '[+−-]?\\d{1,3}(?:[ \\u00a0\\u202f]\\d{3})*,\\d{2}';
 const SBER_LINE = new RegExp(`^(\\d{2}\\.\\d{2}\\.\\d{4})\\s+(\\d{2}:\\d{2})\\s+(?:(\\d{6})\\s+)?(.*?)\\s*(${AMT})(?:\\s+(${AMT}))?$`);
 
 export function parseStatementLines(lines) {
   const out = [];
-  let cur = null;
-  const skip = /^(продолжение на следующей|страница|дата операции|дата обработки|расшифровка|остаток|итого|сумма в валюте|категория|описание операции|по счёту|по счету|выписка|действительна|для проверки)/i;
+  let cur = null, extra = 0;
+  // служебные строки выписки — прерывают описание операции
+  const junk = /^(продолжение на следующей|страница \d|дата операции|дата обработки|и код авторизации|расшифровка|остаток|итого|сумма в валюте|категория|описание операции|выписка по|действител|для проверки|\d\. |\* ?предоставляя|в валюте сч|операции²|номер сч|валюта|дата открытия|дата закрытия|владелец|пополнени[ея] всего|списани[ея] всего)/i;
   for (const raw of lines) {
     const line = raw.trim();
     const m = SBER_LINE.exec(line);
@@ -142,39 +145,52 @@ export function parseStatementLines(lines) {
       cur = {
         date: `${y}-${mo}-${d}`, time: m[2],
         type: amt.trim().startsWith('+') ? 'income' : 'expense', amount: Math.abs(val),
-        bankCategory: (m[4] || '').trim(), description: '', mcc: '',
+        bankCategory: (m[4] || '').trim(), description: '', mcc: '', done: false,
       };
+      extra = 0;
       out.push(cur);
       continue;
     }
-    if (!cur || skip.test(line)) continue;
-    // строка описания: «25.09.2026 PYATEROCHKA 1234 Krasnoyarsk RUS. Операция по карте ****1234»
-    const desc = line.replace(/^\d{2}\.\d{2}\.\d{4}\s*/, '').replace(/\.?\s*Операция по (карте|счету|счёту)\s*\*+\d+/i, '').trim();
-    if (desc && cur.description.length < 120) cur.description = (cur.description ? cur.description + ' ' : '') + desc;
+    if (!cur || cur.done) continue;
+    if (junk.test(line)) { cur.done = true; continue; }
+    if (++extra > 3) { cur.done = true; continue; }
+    // «25.09.2026 887715 GAZPROM*5541*GPN KEMEROVO RUS. Операция по карте ****5323»
+    let desc = line.replace(/^\d{2}\.\d{2}\.\d{4}\s*/, '').replace(/^\d{6}\s+/, '');
+    const end = /Операция по/i.test(desc);
+    desc = desc.replace(/\.?\s*Операция по(\s+(карте|сч[её]ту))?\s*(\*+\d+)?.*$/i, '')
+      .replace(/^((карте|сч[её]ту)\s*)?\*{2,}\d+\.?$/i, '').trim();
+    if (desc) cur.description = (cur.description ? cur.description + ' ' : '') + desc;
+    if (end) cur.done = true;
+  }
+  for (const r of out) {
+    delete r.done;
+    const mcc = /\*(\d{4})\*/.exec(r.description);
+    if (mcc) r.mcc = mcc[1];
+    r.description = r.description.slice(0, 120);
   }
   return out.filter((r) => r.date >= '2000-01-01');
 }
 
-export async function parseFile(file) {
+export async function parseFile(file, onProgress) {
   const buf = await file.arrayBuffer();
   const isPdf = /\.pdf$/i.test(file.name) || new Uint8Array(buf.slice(0, 5)).every((b, i) => b === [37, 80, 68, 70, 45][i]);
-  if (isPdf) return { kind: 'pdf', rows: parseStatementLines(await pdfLines(buf)) };
+  if (isPdf) return { kind: 'pdf', rows: parseStatementLines(await pdfLines(buf, onProgress)) };
   const text = decodeText(buf);
   return { kind: 'csv', rows: parseStatementCSV(text) };
 }
 
 // ===================== Категории =====================
 const RULES = [
-  ['expense', 'Переводы', /перевод|сбп|transfer|card2card|c2c/i],
+  ['expense', 'Переводы', /^(?!.*оплата по qr).*(перевод|transfer|card2card|c2c)/i],
   ['expense', 'Подписки', /подписк|яндекс плюс|yandex\.?plus|кинопоиск|kinopoisk|ivi\b|okko|spotify|apple\.com|itunes|vk музык|boom/i],
   ['expense', 'Продукты', /супермаркет|продукт|пятерочк|пятёрочк|pyaterochk|перекрест|perekrest|магнит|magnit|ашан|auchan|вкусвилл|vkusvill|дикси|dixy|лента|lenta|spar\b|окей|o'key|самокат|samokat|fix ?price|светофор|мария-ра|бристоль|красное.белое|krasnoe|metro c&c|азбука вкуса|globus|глобус/i],
   ['expense', 'Кафе', /ресторан|кафе|фастфуд|fast ?food|кофе|coffee|cafe|restoran|kfc|burger|бургер|вкусно.+точка|додо|dodo|шоколадниц|яндекс еда|eda\.yandex|delivery|суши|sushi|пицц|pizza|столов|бар\b/i],
-  ['expense', 'Транспорт', /транспорт|такси|taxi|yandex\.?go|uber|метрополит|metropoliten|азс|топлив|fuel|бензин|лукойл|lukoil|газпромнефт|gazprom ?neft|роснефт|rosneft|tatneft|парковк|parking|каршеринг|делимобил|citydrive|belka|ржд|rzd|аэрофлот|aeroflot|авиа|avia|пригород|автобус|троллейб|тройка|strelka|автомобил/i],
+  ['expense', 'Транспорт', /транспорт|такси|taxi|yandex\.?go|uber|метрополит|metropoliten|азс|топлив|fuel|бензин|лукойл|lukoil|газпромнефт|gazprom ?neft|gazprom\*|\bgpn\b|роснефт|rosneft|tatneft|парковк|parking|каршеринг|делимобил|citydrive|belka|ржд|rzd|аэрофлот|aeroflot|авиа|avia|пригород|автобус|троллейб|тройка|strelka|автомобил/i],
   ['expense', 'Здоровье', /аптек|apteka|медицин|клиник|clinic|стоматолог|здоров|36[,.]6|ригла|rigla|eapteka|инвитро|invitro|гемотест|анализ/i],
   ['expense', 'Одежда', /одежд|обув|zara|lamoda|gloria|спортмастер|sportmaster|befree|o'stin|ostin|lime\b|love republic|h&m|uniqlo|аксессуар/i],
   ['expense', 'Связь', /связь|мобильн|\bмтс\b|\bmts\b|билайн|beeline|мегафон|megafon|tele2|\bт2\b|ростелеком|rostelecom|интернет|internet|дом\.ру/i],
   ['expense', 'Жильё', /жкх|коммунал|квартпл|электроэнерг|энергосбыт|водоканал|газпром межрегионгаз|аренд|управляющ|капремонт|жилищ/i],
-  ['expense', 'Развлечения', /развлеч|кино|cinema|театр|концерт|билет|ticket|игр|steam|playstation|xbox|отдых|боулинг|бассейн|фитнес|fitness/i],
+  ['expense', 'Развлечения', /развлеч|кино|cinema|театр|концерт|билет|ticket|игр|steam|playstation|xbox|funpay|game services|игров|отдых|боулинг|бассейн|фитнес|fitness/i],
   ['expense', 'Подарки', /подарк|цвет/i],
   ['income', 'Зарплата', /зарплат|заработн|аванс|salary|оплата труда/i],
   ['income', 'Кэшбэк', /кэшб|кешб|cashback|бонус|проценты на остаток|начисление процент/i],
@@ -226,12 +242,14 @@ export async function prepare(rows, accountId) {
     if (existing.has(key)) { already++; continue; }
     existing.add(key);
     const similar = manual.find((t) => t.date === r.date && t.amount === r.amount && t.type === r.type);
-    const own = /между сво|на свой сч|со своего сч|собственн.+сч|инвесткопилк/i.test(`${r.description} ${r.bankCategory}`);
+    const text = `${r.description} ${r.bankCategory}`;
+    const own = /между сво|на свой сч|со своего сч|собственн.+сч|инвесткопилк|vklad-karta|karta-vklad|вклад-карта|карта-вклад/i.test(text) ||
+      /^перевод (в|из|на|с)\s+[\wа-яё-]+(\s?bank|\s?банк)?\.?$/i.test(r.description.trim());
     const categoryId = mapCategory(r);
     out.push({
       ...r, key, categoryId, suggested: categoryId,
       checked: !similar && !own,
-      flag: similar ? 'Похоже, уже добавлена вручную' : own ? 'Перевод между своими счетами' : '',
+      flag: similar ? 'Похоже, уже добавлена вручную' : own ? 'Похоже на перевод между своими счетами' : '',
     });
   }
   return { rows: out.sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || ''))), already };
